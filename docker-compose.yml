@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: socialexplore_db
+    environment:
+      POSTGRES_USER: socialexplore
+      POSTGRES_PASSWORD: socialexplore_dev
+      POSTGRES_DB: socialexplore_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U socialexplore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend service (opțional - poate rula local)
+  # backend:
+  #   build: ./backend
+  #   container_name: socialexplore_backend
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://socialexplore:socialexplore_dev@postgres:5432/socialexplore_db
+  #   volumes:
+  #     - ./backend:/app
+
+volumes:
+  postgres_data:
+
