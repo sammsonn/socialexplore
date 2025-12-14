@@ -5,7 +5,7 @@ import './ActivityDetails.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-const ActivityDetails = ({ activity, onClose, onUpdate }) => {
+const ActivityDetails = ({ activity, onClose, onUpdate, onCalculateRoute }) => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [participation, setParticipation] = useState(null);
@@ -207,6 +207,15 @@ const ActivityDetails = ({ activity, onClose, onUpdate }) => {
 
           {!isCreator && (
             <div className="details-section">
+              {onCalculateRoute && (
+                <button
+                  onClick={() => onCalculateRoute()}
+                  className="btn-primary"
+                  style={{ marginBottom: '10px', width: '100%' }}
+                >
+                  🗺️ Calculează rută
+                </button>
+              )}
               {!participation ? (
                 <button
                   onClick={handleJoin}

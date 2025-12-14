@@ -60,3 +60,6 @@ def downgrade() -> None:
         # Face activity_id NOT NULL din nou (dacă vrei să revii la versiunea anterioară)
         # op.alter_column('read_notifications', 'activity_id', nullable=False)
 
+
+
+

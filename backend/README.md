@@ -42,3 +42,6 @@ Documentația API (Swagger) este disponibilă la `http://localhost:8000/docs`
 - `app/database.py` - Configurare baza de date
 - `alembic/` - Migrații baza de date
 
+
+
+

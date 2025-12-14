@@ -59,6 +59,10 @@ Document_ISI.docx
 Implementare.docx
 apikey.txt
 *.docx
+*.zip
+*.pdf
+*.xlsx
+*.xls
 
 # Documentation (opțional - poți include dacă vrei)
 # FEATURES.md

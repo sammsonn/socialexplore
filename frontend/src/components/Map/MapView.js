@@ -5,8 +5,15 @@ import esriConfig from '@arcgis/core/config';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer';
 import Graphic from '@arcgis/core/Graphic';
 import Point from '@arcgis/core/geometry/Point';
+import Polyline from '@arcgis/core/geometry/Polyline';
 import SimpleMarkerSymbol from '@arcgis/core/symbols/SimpleMarkerSymbol';
+import SimpleLineSymbol from '@arcgis/core/symbols/SimpleLineSymbol';
 import PopupTemplate from '@arcgis/core/PopupTemplate';
+import HeatmapRenderer from '@arcgis/core/renderers/HeatmapRenderer';
+import * as route from '@arcgis/core/rest/route';
+import FeatureSet from '@arcgis/core/rest/support/FeatureSet';
+import * as geometryEngine from '@arcgis/core/geometry/geometryEngine';
+import * as reactiveUtils from '@arcgis/core/core/reactiveUtils';
 import axios from 'axios';
 import './MapView.css';
 import { useAuth } from '../../context/AuthContext';
@@ -16,6 +23,7 @@ import Profile from '../Profile/Profile';
 import FriendsList from '../Friends/FriendsList';
 import ActivityDetails from './ActivityDetails';
 import NotificationsDropdown from '../Notifications/NotificationsDropdown';
+import Dashboard from '../Dashboard/Dashboard';
 import '@arcgis/core/assets/esri/themes/light/main.css';
 
 const ARCGIS_API_KEY = process.env.REACT_APP_ARCGIS_API_KEY;
@@ -27,6 +35,9 @@ const MapViewComponent = () => {
   const activitiesLayerRef = useRef(null);
   const userLocationLayerRef = useRef(null);
   const selectedLocationLayerRef = useRef(null); // Layer separat pentru marker-ul de selecție
+  const routeLayerRef = useRef(null); // Layer pentru rute
+  const heatmapLayerRef = useRef(null); // Layer pentru heatmap activități
+  const usersHeatmapLayerRef = useRef(null); // Layer pentru heatmap utilizatori
   const isMountedRef = useRef(true);
   const initRef = useRef(false); // Previne multiple inițializări
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -35,6 +46,7 @@ const MapViewComponent = () => {
   const [showActivityForm, setShowActivityForm] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
   const [friendsListTab, setFriendsListTab] = useState('friends');
   const [filters, setFilters] = useState({
     category: '',
@@ -44,6 +56,9 @@ const MapViewComponent = () => {
   const [userLocation, setUserLocation] = useState(null);
   const [notificationsCount, setNotificationsCount] = useState(0);
   const [notificationsUpdateKey, setNotificationsUpdateKey] = useState(0);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [showUsersHeatmap, setShowUsersHeatmap] = useState(false);
+  const [currentRoute, setCurrentRoute] = useState(null); // Stochează informații despre ruta curentă
   const { user, token, logout } = useAuth();
 
   // Configurare axios cu token (stabilizat cu useMemo)
@@ -71,6 +86,89 @@ const MapViewComponent = () => {
     };
     return colors[category] || colors['other'];
   };
+
+  // Funcție pentru actualizare heatmap activități
+  const updateHeatmap = useCallback((activitiesData) => {
+    if (!heatmapLayerRef.current || !viewRef.current) return;
+
+    // Șterge heatmap-ul existent
+    try {
+      heatmapLayerRef.current.removeAll();
+    } catch (error) {
+      console.warn('Eroare la ștergerea heatmap-ului:', error);
+    }
+
+    if (!showHeatmap || !activitiesData || activitiesData.length === 0) return;
+
+    // Adaugă puncte pentru heatmap
+    activitiesData.forEach(activity => {
+      try {
+        if (activity.longitude && activity.latitude) {
+          const heatmapPoint = new Graphic({
+            geometry: new Point({
+              longitude: activity.longitude,
+              latitude: activity.latitude
+            }),
+            attributes: {
+              intensity: 1
+            }
+          });
+          heatmapLayerRef.current.add(heatmapPoint);
+        }
+      } catch (error) {
+        console.warn('Eroare la adăugarea punctului în heatmap:', error);
+      }
+    });
+  }, [showHeatmap]);
+
+  // Funcție pentru actualizare heatmap utilizatori
+  const updateUsersHeatmap = useCallback(async () => {
+    if (!usersHeatmapLayerRef.current || !viewRef.current || !userLocation) return;
+
+    // Șterge heatmap-ul existent
+    try {
+      usersHeatmapLayerRef.current.removeAll();
+    } catch (error) {
+      console.warn('Eroare la ștergerea heatmap-ului utilizatorilor:', error);
+    }
+
+    if (!showUsersHeatmap) return;
+
+    try {
+      // Încarcă utilizatorii nearby
+      const response = await api.get('/api/search/users/nearby', {
+        params: {
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
+          radius_km: 50 // Caută utilizatori într-o rază de 50 km
+        }
+      });
+
+      const users = response.data || [];
+      
+      // Adaugă puncte pentru heatmap utilizatori
+      users.forEach(user => {
+        try {
+          if (user.longitude && user.latitude) {
+            const heatmapPoint = new Graphic({
+              geometry: new Point({
+                longitude: user.longitude,
+                latitude: user.latitude
+              }),
+              attributes: {
+                intensity: 1
+              }
+            });
+            usersHeatmapLayerRef.current.add(heatmapPoint);
+          }
+        } catch (error) {
+          console.warn('Eroare la adăugarea utilizatorului în heatmap:', error);
+        }
+      });
+    } catch (error) {
+      console.error('Eroare la încărcarea utilizatorilor pentru heatmap:', error);
+    }
+  }, [showUsersHeatmap, userLocation, api]);
 
   const updateMapMarkers = useCallback((activitiesData) => {
     if (!activitiesLayerRef.current || !viewRef.current) return;
@@ -109,7 +207,13 @@ const MapViewComponent = () => {
                 <p><strong>Data:</strong> ${new Date(activity.start_time).toLocaleString('ro-RO')}</p>
                 ${activity.description ? `<p>${activity.description}</p>` : ''}
               </div>
-            `
+            `,
+            actions: [
+              {
+                title: "🗺️ Calculează rută",
+                id: "route"
+              }
+            ]
           })
         });
 
@@ -139,9 +243,14 @@ const MapViewComponent = () => {
       }
 
       const response = await api.get(url, { params });
-      setActivities(response.data);
+      const activitiesData = response.data;
+      setActivities(activitiesData);
       // Actualizează marker-ele doar cu activitățile filtrate
-      updateMapMarkers(response.data);
+      updateMapMarkers(activitiesData);
+      // Actualizează heatmap-ul doar dacă este activat
+      if (showHeatmap) {
+        updateHeatmap(activitiesData);
+      }
     } catch (error) {
       console.error('Eroare la încărcarea activităților:', error);
     }
@@ -237,6 +346,27 @@ const MapViewComponent = () => {
       const selectedLocationLayer = new GraphicsLayer();
       map.add(selectedLocationLayer);
       selectedLocationLayerRef.current = selectedLocationLayer;
+
+      // Layer pentru rute
+      const routeLayer = new GraphicsLayer();
+      map.add(routeLayer);
+      routeLayerRef.current = routeLayer;
+
+      // Layer pentru heatmap activități (va fi adăugat/șters dinamic)
+      const heatmapLayer = new GraphicsLayer({
+        opacity: 0.7,
+        id: "heatmap-activities"
+      });
+      heatmapLayerRef.current = heatmapLayer;
+      // Nu adăugăm layer-ul pe hartă imediat - va fi adăugat când showHeatmap este true
+
+      // Layer pentru heatmap utilizatori (va fi adăugat/șters dinamic)
+      const usersHeatmapLayer = new GraphicsLayer({
+        opacity: 0.7,
+        id: "heatmap-users"
+      });
+      usersHeatmapLayerRef.current = usersHeatmapLayer;
+      // Nu adăugăm layer-ul pe hartă imediat - va fi adăugat când showUsersHeatmap este true
       
       // Handler pentru click pe marker-ele activităților (doar când formularul NU este deschis)
       // Acest handler va fi gestionat separat în useEffect pentru showActivityForm
@@ -379,6 +509,24 @@ const MapViewComponent = () => {
         
         loadUserLocation();
 
+        // Handler pentru click pe marker-ele activităților
+        view.on("click", (event) => {
+          if (showActivityForm || showProfile) {
+            return; // Nu procesa click-uri când formularul este deschis
+          }
+
+          view.hitTest(event).then((response) => {
+            const graphic = response.results.find(
+              (result) => result.graphic && result.graphic.layer === activitiesLayerRef.current
+            )?.graphic;
+
+            if (graphic && graphic.attributes) {
+              const activity = graphic.attributes;
+              setSelectedActivity(activity);
+            }
+          });
+        });
+
         if (isMountedRef.current) {
           setMapLoaded(true);
         }
@@ -421,6 +569,9 @@ const MapViewComponent = () => {
       activitiesLayerRef.current = null;
       userLocationLayerRef.current = null;
       selectedLocationLayerRef.current = null;
+      routeLayerRef.current = null;
+      heatmapLayerRef.current = null;
+      usersHeatmapLayerRef.current = null;
     };
   }, []); // Rulează doar o dată la mount
 
@@ -564,6 +715,86 @@ const MapViewComponent = () => {
     };
   }, [activities, showActivityForm]);
 
+  // Gestionare heatmap layer pentru activități
+  useEffect(() => {
+    if (!viewRef.current || !heatmapLayerRef.current || !mapLoaded) return;
+
+    const map = viewRef.current.map;
+    const heatmapLayer = heatmapLayerRef.current;
+
+    if (showHeatmap) {
+      // Aplică HeatmapRenderer
+      heatmapLayer.renderer = new HeatmapRenderer({
+        colorStops: [
+          { ratio: 0, color: "rgba(63, 40, 102, 0)" },
+          { ratio: 0.083, color: "rgba(63, 40, 102, 0.8)" },
+          { ratio: 0.25, color: "rgba(63, 40, 102, 0.8)" },
+          { ratio: 0.5, color: "rgba(17, 147, 154, 0.8)" },
+          { ratio: 0.75, color: "rgba(77, 193, 103, 0.8)" },
+          { ratio: 1, color: "rgba(255, 255, 0, 0.8)" }
+        ],
+        maxPixelIntensity: 75,
+        minPixelIntensity: 0
+      });
+
+      // Adaugă layer-ul pe hartă dacă nu este deja adăugat
+      const existingLayer = map.findLayerById(heatmapLayer.id);
+      if (!existingLayer) {
+        map.add(heatmapLayer);
+        console.log('Heatmap layer adăugat pe hartă');
+      }
+      
+      // Reîncarcă heatmap-ul dacă există activități
+      if (activities && activities.length > 0) {
+        updateHeatmap(activities);
+      }
+    } else {
+      // Șterge layer-ul de pe hartă
+      const existingLayer = map.findLayerById(heatmapLayer.id);
+      if (existingLayer) {
+        map.remove(heatmapLayer);
+        console.log('Heatmap layer eliminat de pe hartă');
+      }
+    }
+  }, [showHeatmap, mapLoaded, activities, updateHeatmap]);
+
+  // Gestionare heatmap layer pentru utilizatori
+  useEffect(() => {
+    if (!viewRef.current || !usersHeatmapLayerRef.current) return;
+
+    const map = viewRef.current.map;
+    const usersHeatmapLayer = usersHeatmapLayerRef.current;
+
+    if (showUsersHeatmap) {
+      // Aplică HeatmapRenderer cu culori diferite pentru utilizatori
+      usersHeatmapLayer.renderer = new HeatmapRenderer({
+        colorStops: [
+          { ratio: 0, color: "rgba(102, 40, 63, 0)" },
+          { ratio: 0.083, color: "rgba(102, 40, 63, 0.8)" },
+          { ratio: 0.25, color: "rgba(154, 17, 147, 0.8)" },
+          { ratio: 0.5, color: "rgba(193, 77, 103, 0.8)" },
+          { ratio: 0.75, color: "rgba(255, 120, 0, 0.8)" },
+          { ratio: 1, color: "rgba(255, 200, 0, 0.8)" }
+        ],
+        maxPixelIntensity: 75,
+        minPixelIntensity: 0
+      });
+
+      // Adaugă layer-ul pe hartă dacă nu este deja adăugat
+      if (!map.findLayerById(usersHeatmapLayer.id)) {
+        map.add(usersHeatmapLayer);
+      }
+
+      // Actualizează heatmap-ul utilizatorilor
+      updateUsersHeatmap();
+    } else {
+      // Șterge layer-ul de pe hartă
+      if (map.findLayerById(usersHeatmapLayer.id)) {
+        map.remove(usersHeatmapLayer);
+      }
+    }
+  }, [showUsersHeatmap, updateUsersHeatmap]);
+
   // Încarcă activitățile
   useEffect(() => {
     if (!mapLoaded || !userLocation) return;
@@ -648,11 +879,211 @@ const MapViewComponent = () => {
     setSelectedActivity(activity);
   };
 
+  // Funcție pentru calculare rută
+  const calculateRoute = useCallback(async (activity) => {
+    if (!userLocation || !routeLayerRef.current) {
+      console.warn('Locația utilizatorului sau routeLayer nu este disponibil');
+      return;
+    }
+
+    if (!ARCGIS_API_KEY) {
+      console.error('ARCGIS_API_KEY nu este setat! Rutarea necesită API key.');
+      alert('Rutarea necesită un API key ArcGIS. Te rog configurează REACT_APP_ARCGIS_API_KEY în .env');
+      return;
+    }
+
+    try {
+      // Șterge ruta anterioară
+      routeLayerRef.current.removeAll();
+
+      // Creează punctele de start și destinație
+      const startPoint = new Point({
+        longitude: userLocation.longitude,
+        latitude: userLocation.latitude
+      });
+
+      const endPoint = new Point({
+        longitude: activity.longitude,
+        latitude: activity.latitude
+      });
+
+      // Creează FeatureSet pentru punctele de rută
+      const stops = new FeatureSet({
+        features: [
+          new Graphic({
+            geometry: startPoint,
+            attributes: { Name: "Pornire" }
+          }),
+          new Graphic({
+            geometry: endPoint,
+            attributes: { Name: "Destinație" }
+          })
+        ]
+      });
+
+      // URL-ul serviciului de routing ArcGIS
+      const routeUrl = "https://route.arcgis.com/arcgis/rest/services/World/Route/NAServer/Route_World";
+
+      // Parametrii pentru rută
+      const routeParams = {
+        stops: stops,
+        returnDirections: true,
+        directionsLengthUnits: "kilometers"
+      };
+
+      console.log('Calculez rută de la', userLocation, 'la', activity.title);
+      
+      // Calculează ruta folosind route.solve
+      const routeResult = await route.solve(routeUrl, {
+        stops: stops,
+        returnDirections: true,
+        directionsLengthUnits: "kilometers"
+      });
+      
+      console.log('Rezultat rută:', routeResult);
+      
+      if (routeResult.routeResults && routeResult.routeResults.length > 0) {
+        const routeGeometry = routeResult.routeResults[0].route.geometry;
+        const routeGraphic = new Graphic({
+          geometry: routeGeometry,
+          symbol: new SimpleLineSymbol({
+            color: [0, 100, 255, 0.8],
+            width: 4,
+            style: "solid"
+          })
+        });
+
+        routeLayerRef.current.add(routeGraphic);
+
+        // Calculează distanța și timpul
+        const distance = routeResult.routeResults[0].route.attributes.Total_Kilometers || 0;
+        const time = routeResult.routeResults[0].route.attributes.Total_TravelTime || 0;
+        const timeMinutes = Math.round(time / 60);
+
+        // Salvează informațiile despre rută
+        setCurrentRoute({
+          activity: activity,
+          distance: distance.toFixed(2),
+          time: timeMinutes,
+          directions: routeResult.routeResults[0].directions || []
+        });
+
+        // Zoom la ruta calculată
+        if (viewRef.current) {
+          viewRef.current.goTo({
+            target: routeGeometry,
+            padding: 50
+          }).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.error('Eroare la calcularea rutei:', error);
+      // Fallback: afișează distanța în linie dreaptă
+      if (userLocation && activity) {
+        const startPoint = new Point({
+          longitude: userLocation.longitude,
+          latitude: userLocation.latitude
+        });
+        const endPoint = new Point({
+          longitude: activity.longitude,
+          latitude: activity.latitude
+        });
+        
+        const straightLine = new Polyline({
+          paths: [[
+            [startPoint.longitude, startPoint.latitude],
+            [endPoint.longitude, endPoint.latitude]
+          ]]
+        });
+
+        const distance = geometryEngine.geodesicLength(straightLine, "kilometers");
+        
+        const routeGraphic = new Graphic({
+          geometry: straightLine,
+          symbol: new SimpleLineSymbol({
+            color: [0, 100, 255, 0.8],
+            width: 4,
+            style: "dash"
+          })
+        });
+
+        routeLayerRef.current.add(routeGraphic);
+        setCurrentRoute({
+          activity: activity,
+          distance: distance.toFixed(2),
+          time: null,
+          directions: []
+        });
+      }
+    }
+  }, [userLocation]);
+
+  // Funcție pentru anulare rută
+  const clearRoute = useCallback(() => {
+    if (routeLayerRef.current) {
+      routeLayerRef.current.removeAll();
+    }
+    setCurrentRoute(null);
+  }, []);
+
+  // Handler pentru popup actions (rutare) - trebuie să fie după definirea calculateRoute
+  useEffect(() => {
+    if (!viewRef.current || !mapLoaded) return;
+
+    const view = viewRef.current;
+    let handle = null;
+    let watchHandle = null;
+    
+    const handlePopupAction = (event) => {
+      if (event && event.action && event.action.id === "route") {
+        const graphic = view.popup.selectedFeature;
+        if (graphic && graphic.attributes) {
+          const activity = graphic.attributes;
+          calculateRoute(activity);
+        }
+      }
+    };
+
+    // Folosim watch pentru a monitoriza când popup.viewModel devine disponibil
+    const setupPopupHandler = () => {
+      if (view.popup && view.popup.viewModel) {
+        handle = view.popup.viewModel.on("trigger-action", handlePopupAction);
+        return true;
+      }
+      return false;
+    };
+
+    // Încearcă să seteze handler-ul imediat
+    if (!setupPopupHandler()) {
+      // Dacă nu este disponibil, folosim watch pentru a aștepta
+      watchHandle = reactiveUtils.watch(
+        () => view.popup && view.popup.viewModel,
+        (hasViewModel) => {
+          if (hasViewModel && !handle) {
+            setupPopupHandler();
+          }
+        }
+      );
+    }
+
+    return () => {
+      if (handle && handle.remove) {
+        handle.remove();
+      }
+      if (watchHandle && watchHandle.remove) {
+        watchHandle.remove();
+      }
+    };
+  }, [mapLoaded, calculateRoute]);
+
   return (
     <div className="map-view-container">
       <div className="map-header">
         <h1>SocialExplore</h1>
         <div className="header-actions">
+          <button onClick={() => setShowDashboard(true)} className="btn-header">
+            📊 Dashboard
+          </button>
           <button onClick={() => setShowProfile(true)} className="btn-header">
             Profil
           </button>
@@ -730,6 +1161,56 @@ const MapViewComponent = () => {
                 }}
               />
             </div>
+            <div className="filter-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showHeatmap}
+                  onChange={(e) => setShowHeatmap(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span>🔥 Afișează heatmap activități</span>
+              </label>
+            </div>
+            <div className="filter-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showUsersHeatmap}
+                  onChange={(e) => setShowUsersHeatmap(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span>👥 Afișează heatmap utilizatori</span>
+              </label>
+            </div>
+            {currentRoute && (
+              <div className="route-info" style={{ 
+                marginTop: '10px', 
+                padding: '10px', 
+                background: '#e8f4f8', 
+                borderRadius: '6px',
+                fontSize: '0.9rem'
+              }}>
+                <p><strong>📍 Ruta către:</strong> {currentRoute.activity.title}</p>
+                <p><strong>Distanță:</strong> {currentRoute.distance} km</p>
+                {currentRoute.time && <p><strong>Timp estimat:</strong> {currentRoute.time} min</p>}
+                <button 
+                  onClick={clearRoute}
+                  style={{
+                    marginTop: '8px',
+                    padding: '6px 12px',
+                    background: '#dc3545',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    width: '100%'
+                  }}
+                >
+                  ✕ Anulează rută
+                </button>
+              </div>
+            )}
             <button
               onClick={() => setShowActivityForm(true)}
               className="btn-primary"
@@ -782,6 +1263,9 @@ const MapViewComponent = () => {
           onUpdate={() => {
             loadActivities();
             loadNotifications(); // Reîncarcă notificările când se actualizează o activitate
+          }}
+          onCalculateRoute={() => {
+            calculateRoute(selectedActivity);
           }}
         />
       )}
@@ -855,6 +1339,12 @@ const MapViewComponent = () => {
           userLocation={userLocation}
           initialTab={friendsListTab}
           onUpdate={loadNotifications}
+        />
+      )}
+
+      {showDashboard && (
+        <Dashboard
+          onClose={() => setShowDashboard(false)}
         />
       )}
     </div>

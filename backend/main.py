@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
-from app.routers import auth, users, activities, participations, friends, messages, search
+from app.routers import auth, users, activities, participations, friends, messages, search, statistics
 
 # Creează tabelele în baza de date
 Base.metadata.create_all(bind=engine)
@@ -15,7 +15,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,6 +29,7 @@ app.include_router(participations.router, prefix="/api/participations", tags=["p
 app.include_router(friends.router, prefix="/api/friends", tags=["friends"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
+app.include_router(statistics.router, prefix="/api/statistics", tags=["statistics"])
 
 
 @app.get("/")

@@ -7,35 +7,39 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(null); // Nu mai încărcăm token-ul din localStorage
+  const [token, setToken] = useState(() => {
+    // Încarcă token-ul din localStorage la inițializare
+    return localStorage.getItem('token');
+  });
   const [loading, setLoading] = useState(true);
 
-  // Șterge token-ul din localStorage la fiecare pornire a aplicației
+  // Validează token-ul la pornirea aplicației
   useEffect(() => {
-    localStorage.removeItem('token');
-    setToken(null);
-    setUser(null);
-    setLoading(false);
-  }, []); // Rulează doar o dată la mount
+    const validateToken = async () => {
+      const storedToken = localStorage.getItem('token');
+      if (!storedToken) {
+        setLoading(false);
+        return;
+      }
+      
+      try {
+        const response = await axios.get(`${API_URL}/api/users/me`, {
+          headers: { Authorization: `Bearer ${storedToken}` }
+        });
+        setToken(storedToken);
+        setUser(response.data);
+        setLoading(false);
+      } catch (error) {
+        // Token invalid sau expirat - șterge-l
+        localStorage.removeItem('token');
+        setToken(null);
+        setUser(null);
+        setLoading(false);
+      }
+    };
 
-  const validateToken = useCallback(async () => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const response = await axios.get(`${API_URL}/api/users/me`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setUser(response.data);
-      setLoading(false);
-    } catch (error) {
-      localStorage.removeItem('token');
-      setToken(null);
-      setUser(null);
-      setLoading(false);
-    }
-  }, [token]);
+    validateToken();
+  }, []); // Rulează doar o dată la mount
 
   const login = async (email, password) => {
     try {
