@@ -879,141 +879,156 @@ const MapViewComponent = () => {
     setSelectedActivity(activity);
   };
 
-  // Funcție pentru calculare rută
+  // Funcție pentru calculare rută folosind direct REST API
   const calculateRoute = useCallback(async (activity) => {
     if (!userLocation || !routeLayerRef.current) {
       console.warn('Locația utilizatorului sau routeLayer nu este disponibil');
       return;
     }
-
     if (!ARCGIS_API_KEY) {
       console.error('ARCGIS_API_KEY nu este setat! Rutarea necesită API key.');
       alert('Rutarea necesită un API key ArcGIS. Te rog configurează REACT_APP_ARCGIS_API_KEY în .env');
       return;
     }
-
     try {
-      // Șterge ruta anterioară
       routeLayerRef.current.removeAll();
-
-      // Creează punctele de start și destinație
-      const startPoint = new Point({
-        longitude: userLocation.longitude,
-        latitude: userLocation.latitude
-      });
-
-      const endPoint = new Point({
-        longitude: activity.longitude,
-        latitude: activity.latitude
-      });
-
-      // Creează FeatureSet pentru punctele de rută
-      const stops = new FeatureSet({
+      
+      // Construiește URL-ul cu parametri pentru serviciul de rutare
+      const routeServiceUrl = "https://route-api.arcgis.com/arcgis/rest/services/World/Route/NAServer/Route_World/solve";
+      
+      // Formatează stops ca JSON pentru API
+      const stops = {
+        type: "features",
         features: [
-          new Graphic({
-            geometry: startPoint,
-            attributes: { Name: "Pornire" }
-          }),
-          new Graphic({
-            geometry: endPoint,
-            attributes: { Name: "Destinație" }
-          })
-        ]
-      });
-
-      // URL-ul serviciului de routing ArcGIS
-      const routeUrl = "https://route.arcgis.com/arcgis/rest/services/World/Route/NAServer/Route_World";
-
-      // Parametrii pentru rută
-      const routeParams = {
-        stops: stops,
-        returnDirections: true,
-        directionsLengthUnits: "kilometers"
+          {
+            geometry: {
+              x: userLocation.longitude,
+              y: userLocation.latitude,
+              spatialReference: { wkid: 4326 }
+            },
+            attributes: { Name: "Start" }
+          },
+          {
+            geometry: {
+              x: activity.longitude,
+              y: activity.latitude,
+              spatialReference: { wkid: 4326 }
+            },
+            attributes: { Name: "End" }
+          }
+        ],
+        spatialReference: { wkid: 4326 }
       };
-
-      console.log('Calculez rută de la', userLocation, 'la', activity.title);
       
-      // Calculează ruta folosind route.solve
-      const routeResult = await route.solve(routeUrl, {
-        stops: stops,
-        returnDirections: true,
-        directionsLengthUnits: "kilometers"
+      // Construiește parametrii pentru request
+      const params = new URLSearchParams({
+        f: 'json',
+        token: ARCGIS_API_KEY,
+        stops: JSON.stringify(stops),
+        returnDirections: 'true',
+        returnRoutes: 'true',
+        directionsLengthUnits: 'esriNAUKilometers',
+        outSR: '4326'
       });
       
-      console.log('Rezultat rută:', routeResult);
+      console.log('Apel serviciu rutare...');
       
-      if (routeResult.routeResults && routeResult.routeResults.length > 0) {
-        const routeGeometry = routeResult.routeResults[0].route.geometry;
+      // Apelează serviciul REST
+      const response = await fetch(`${routeServiceUrl}?${params.toString()}`);
+      const data = await response.json();
+      
+      console.log('Răspuns serviciu rutare:', data);
+      
+      if (data.error) {
+        throw new Error(data.error.message || 'Eroare la calcularea rutei');
+      }
+      
+      if (data.routes && data.routes.features && data.routes.features.length > 0) {
+        const routeFeature = data.routes.features[0];
+        const routeGeometry = routeFeature.geometry;
+        
+        if (!routeGeometry || !routeGeometry.paths) {
+          throw new Error('Geometria rutei nu este validă');
+        }
+        
+        // Creează Polyline din geometria returnată
+        const polyline = new Polyline({
+          paths: routeGeometry.paths,
+          spatialReference: { wkid: 4326 }
+        });
+        
+        // Adaugă linia rutei pe hartă
         const routeGraphic = new Graphic({
-          geometry: routeGeometry,
+          geometry: polyline,
           symbol: new SimpleLineSymbol({
             color: [0, 100, 255, 0.8],
             width: 4,
             style: "solid"
           })
         });
-
+        
         routeLayerRef.current.add(routeGraphic);
-
-        // Calculează distanța și timpul
-        const distance = routeResult.routeResults[0].route.attributes.Total_Kilometers || 0;
-        const time = routeResult.routeResults[0].route.attributes.Total_TravelTime || 0;
-        const timeMinutes = Math.round(time / 60);
-
-        // Salvează informațiile despre rută
+        
+        // Extrage informații despre rută
+        const attrs = routeFeature.attributes || {};
+        const distance = attrs.Total_Kilometers || attrs.Shape_Length || null;
+        const time = attrs.Total_TravelTime || attrs.Total_Minutes || null;
+        const timeMinutes = time ? Math.round(time) : null;
+        
         setCurrentRoute({
           activity: activity,
-          distance: distance.toFixed(2),
+          distance: distance ? Number(distance).toFixed(2) : '—',
           time: timeMinutes,
-          directions: routeResult.routeResults[0].directions || []
-        });
-
-        // Zoom la ruta calculată
-        if (viewRef.current) {
-          viewRef.current.goTo({
-            target: routeGeometry,
-            padding: 50
-          }).catch(() => {});
-        }
-      }
-    } catch (error) {
-      console.error('Eroare la calcularea rutei:', error);
-      // Fallback: afișează distanța în linie dreaptă
-      if (userLocation && activity) {
-        const startPoint = new Point({
-          longitude: userLocation.longitude,
-          latitude: userLocation.latitude
-        });
-        const endPoint = new Point({
-          longitude: activity.longitude,
-          latitude: activity.latitude
+          directions: data.directions || []
         });
         
+        // Centrează harta pe rută
+        if (viewRef.current) {
+          viewRef.current.goTo({
+            target: polyline,
+            padding: { top: 50, bottom: 50, left: 50, right: 50 }
+          }).catch(() => {});
+        }
+        
+        return;
+      }
+      
+      throw new Error('Nu s-au returnat rezultate pentru rută');
+      
+    } catch (error) {
+      console.error('Eroare la calcularea rutei:', error);
+      
+      // Fallback: afișează o linie dreaptă cu stil întrerupt
+      if (userLocation && activity && routeLayerRef.current) {
         const straightLine = new Polyline({
           paths: [[
-            [startPoint.longitude, startPoint.latitude],
-            [endPoint.longitude, endPoint.latitude]
-          ]]
+            [userLocation.longitude, userLocation.latitude],
+            [activity.longitude, activity.latitude]
+          ]],
+          spatialReference: { wkid: 4326 }
         });
-
+        
         const distance = geometryEngine.geodesicLength(straightLine, "kilometers");
         
         const routeGraphic = new Graphic({
           geometry: straightLine,
           symbol: new SimpleLineSymbol({
-            color: [0, 100, 255, 0.8],
+            color: [255, 100, 0, 0.8],
             width: 4,
             style: "dash"
           })
         });
-
+        
         routeLayerRef.current.add(routeGraphic);
+        
         setCurrentRoute({
           activity: activity,
           distance: distance.toFixed(2),
           time: null,
           directions: []
         });
+        
+        alert('Nu s-a putut calcula ruta automată. Afișez linie dreaptă ca aproximare.');
       }
     }
   }, [userLocation]);
