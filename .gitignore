@@ -47,6 +47,10 @@ logs/
 *.db
 *.sqlite
 
+# Tools
+tools/*.json
+tools/start_time_after)
+
 # Docker
 docker-compose.override.yml
 
