@@ -50,7 +50,7 @@ const MapViewComponent = () => {
   const [friendsListTab, setFriendsListTab] = useState('friends');
   const [filters, setFilters] = useState({
     category: '',
-    maxDistance: 10,
+    maxDistance: 50,
     showNearby: true
   });
   const [userLocation, setUserLocation] = useState(null);
@@ -231,7 +231,7 @@ const MapViewComponent = () => {
       let url = '/api/activities/nearby';
       // Validează și convertește maxDistance la număr
       const maxDistance = Number(filters.maxDistance);
-      const validMaxDistance = (isNaN(maxDistance) || maxDistance <= 0) ? 10 : maxDistance;
+      const validMaxDistance = (isNaN(maxDistance) || maxDistance <= 0) ? 50 : maxDistance;
       
       const params = {
         latitude: userLocation.latitude,
