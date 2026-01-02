@@ -311,3 +311,57 @@ async def get_my_created_activities(
     ).order_by(Activity.created_at.desc()).all()
 
     return [activity_to_dict(activity, current_user.id, db) for activity in activities]
+
+@router.get("/grid")
+def activities_grid(
+    xmin: float,
+    ymin: float,
+    xmax: float,
+    ymax: float,
+    cell_km: float = 10,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns GeoJSON grid cells with activity counts
+    """
+
+    activities = db.query(Activity).filter(
+        Activity.longitude.between(xmin, xmax),
+        Activity.latitude.between(ymin, ymax),
+    ).all()
+
+    def snap(val, step):
+        return round(val / step) * step
+
+    DEG_PER_KM = 1 / 111.0
+    step = cell_km * DEG_PER_KM
+
+    buckets = {}
+
+    for a in activities:
+        gx = snap(a.longitude, step)
+        gy = snap(a.latitude, step)
+        key = (gx, gy)
+        buckets[key] = buckets.get(key, 0) + 1
+
+    features = []
+    for (gx, gy), count in buckets.items():
+        features.append({
+            "type": "Feature",
+            "properties": {"count": count},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [gx, gy],
+                    [gx + step, gy],
+                    [gx + step, gy + step],
+                    [gx, gy + step],
+                    [gx, gy],
+                ]]
+            }
+        })
+
+    return {
+        "type": "FeatureCollection",
+        "features": features
+    }
