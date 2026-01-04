@@ -1,7 +1,9 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
 from app.routers import auth, users, activities, participations, friends, messages, search, statistics
+from starlette.applications import Starlette
 
 # Creează tabelele în baza de date
 Base.metadata.create_all(bind=engine)
@@ -9,17 +11,36 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="SocialExplore API",
     description="API pentru platforma SocialExplore - conectare persoane și organizare activități locale",
-    version="0.1.0"
+    version="1.1.0"
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+static_app = Starlette()
+static_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001"
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"]
+)
+
+static_app.mount("/", StaticFiles(directory="app/static"), name="static")
+# app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/static", static_app)
+
 
 # Include router-ele
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
