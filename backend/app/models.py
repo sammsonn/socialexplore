@@ -29,7 +29,7 @@ class User(Base):
     bio = Column(Text, nullable=True)
     interests = Column(JSON, nullable=True)  # Listă de interese
     home_location = Column(Geometry('POINT', srid=4326), nullable=True)  # PostGIS Point
-    visibility_radius_km = Column(Integer, default=10)  # Raza de vizibilitate în km
+    visibility_radius_km = Column(Integer, default=50)  # Raza de vizibilitate în km
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relații

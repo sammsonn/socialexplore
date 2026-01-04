@@ -9,7 +9,7 @@ class UserBase(BaseModel):
     email: EmailStr
     bio: Optional[str] = None
     interests: Optional[List[str]] = None
-    visibility_radius_km: Optional[int] = 10
+    visibility_radius_km: Optional[int] = 50
 
 
 class UserCreate(UserBase):

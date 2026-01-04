@@ -12,6 +12,7 @@ import PopupTemplate from '@arcgis/core/PopupTemplate';
 import HeatmapRenderer from '@arcgis/core/renderers/HeatmapRenderer';
 import * as route from '@arcgis/core/rest/route';
 import FeatureSet from '@arcgis/core/rest/support/FeatureSet';
+import GeoJSONLayer from "@arcgis/core/layers/GeoJSONLayer";
 import * as geometryEngine from '@arcgis/core/geometry/geometryEngine';
 import * as reactiveUtils from '@arcgis/core/core/reactiveUtils';
 import axios from 'axios';
@@ -25,6 +26,9 @@ import ActivityDetails from './ActivityDetails';
 import NotificationsDropdown from '../Notifications/NotificationsDropdown';
 import Dashboard from '../Dashboard/Dashboard';
 import '@arcgis/core/assets/esri/themes/light/main.css';
+import Polygon from '@arcgis/core/geometry/Polygon';
+import SimpleFillSymbol from '@arcgis/core/symbols/SimpleFillSymbol';
+import * as webMercatorUtils from '@arcgis/core/geometry/support/webMercatorUtils';
 
 const ARCGIS_API_KEY = process.env.REACT_APP_ARCGIS_API_KEY;
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -34,10 +38,12 @@ const MapViewComponent = () => {
   const viewRef = useRef(null);
   const activitiesLayerRef = useRef(null);
   const userLocationLayerRef = useRef(null);
+  const countiesLayerRef = useRef(null);
   const selectedLocationLayerRef = useRef(null); // Layer separat pentru marker-ul de selecție
   const routeLayerRef = useRef(null); // Layer pentru rute
   const heatmapLayerRef = useRef(null); // Layer pentru heatmap activități
   const usersHeatmapLayerRef = useRef(null); // Layer pentru heatmap utilizatori
+  const regionLayerRef = useRef(null); // layer pentru “regions/grid choropleth”
   const isMountedRef = useRef(true);
   const initRef = useRef(false); // Previne multiple inițializări
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -47,10 +53,11 @@ const MapViewComponent = () => {
   const [showProfile, setShowProfile] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
+  const [showRegionChoropleth, setShowRegionChoropleth] = useState(false);
   const [friendsListTab, setFriendsListTab] = useState('friends');
   const [filters, setFilters] = useState({
     category: '',
-    maxDistance: 10,
+    maxDistance: 50,
     showNearby: true
   });
   const [userLocation, setUserLocation] = useState(null);
@@ -60,6 +67,7 @@ const MapViewComponent = () => {
   const [showUsersHeatmap, setShowUsersHeatmap] = useState(false);
   const [currentRoute, setCurrentRoute] = useState(null); // Stochează informații despre ruta curentă
   const { user, token, logout } = useAuth();
+  const lastGridKeyRef = useRef("");
 
   // Configurare axios cu token (stabilizat cu useMemo)
   const api = useMemo(() => {
@@ -121,6 +129,36 @@ const MapViewComponent = () => {
     });
   }, [showHeatmap]);
 
+  // pentru heatmap
+  const cellSizeKmForZoom = (zoom) => {
+    if (zoom <= 7) return 40;
+    if (zoom <= 9) return 20;
+    if (zoom <= 11) return 10;
+    if (zoom <= 13) return 5;
+    return 2;
+  };
+
+  const pubuColor = (t) => {
+    // t in [0, 1]
+    // PuBu ramp (white -> pale blue -> medium -> dark blue)
+    const stops = [
+      [255, 255, 255, 0.9],
+      [222, 235, 247, 0.9],
+      [158, 202, 225, 0.9],
+      [49, 130, 189, 0.9],
+      [8, 81, 156, 0.9],
+    ];
+
+    const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+    const i = Math.floor(x);
+    const f = x - i;
+    const a = stops[i];
+    const b = stops[Math.min(i + 1, stops.length - 1)];
+
+    const lerp = (u, v) => Math.round(u + (v - u) * f);
+    return [lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2]), a[3]];
+  };
+
   // Funcție pentru actualizare heatmap utilizatori
   const updateUsersHeatmap = useCallback(async () => {
     if (!usersHeatmapLayerRef.current || !viewRef.current || !userLocation) return;
@@ -145,7 +183,7 @@ const MapViewComponent = () => {
       });
 
       const users = response.data || [];
-      
+
       // Adaugă puncte pentru heatmap utilizatori
       users.forEach(user => {
         try {
@@ -226,13 +264,13 @@ const MapViewComponent = () => {
 
   const loadActivities = useCallback(async () => {
     if (!userLocation) return;
-    
+
     try {
       let url = '/api/activities/nearby';
       // Validează și convertește maxDistance la număr
       const maxDistance = Number(filters.maxDistance);
-      const validMaxDistance = (isNaN(maxDistance) || maxDistance <= 0) ? 10 : maxDistance;
-      
+      const validMaxDistance = (isNaN(maxDistance) || maxDistance <= 0) ? 50 : maxDistance;
+
       const params = {
         latitude: userLocation.latitude,
         longitude: userLocation.longitude,
@@ -272,7 +310,7 @@ const MapViewComponent = () => {
   // Handler pentru click pe notificare
   const handleNotificationClick = useCallback((notification) => {
     console.log('Click pe notificare:', notification);
-    
+
     // Pentru notificările de prietenie, deschide lista de prieteni
     if (notification.type === 'friend_request_received' || notification.type === 'friend_request_accepted') {
       setShowFriends(true);
@@ -289,7 +327,7 @@ const MapViewComponent = () => {
       console.warn('mapDiv.current este null');
       return;
     }
-    
+
     if (viewRef.current || initRef.current) {
       console.log('Harta deja inițializată sau în proces de inițializare');
       return; // Previne double initialization
@@ -321,6 +359,60 @@ const MapViewComponent = () => {
         basemap: 'streets' // Schimbat de la 'arcgis-topographic' la 'streets' pentru compatibilitate mai bună
       });
 
+      const countiesLayer = new GeoJSONLayer({
+        url: "http://localhost:8000/static/romania_counties.geojson",
+        title: "Activities by County",
+        visible: false,
+        renderer: {
+          type: "simple",
+          symbol: {
+            type: "simple-fill",
+            outline: {
+              color: "white",
+              width: 0.5
+            }
+          },
+          visualVariables: [
+            {
+              type: "color",
+              field: "activity_count",
+              stops: [
+                { value: 0, color: "#f2f2f2", label: "0" },
+                { value: 10, color: "#c6dbef", label: "Low" },
+                { value: 30, color: "#6baed6", label: "Medium" },
+                { value: 60, color: "#2171b5", label: "High" }
+              ]
+            }
+          ]
+        },
+        popupTemplate: {
+          title: "{name_latn}",
+          content: "Activities: {activity_count}"
+        }
+      });
+
+      // countiesLayer.renderer = {
+      //   type: "simple",
+      //   symbol: {
+      //     type: "simple-fill",
+      //     outline: { color: [255, 255, 255, 0.6], width: 0.5 }
+      //   },
+      //   visualVariables: [{
+      //     type: "color",
+      //     field: "activity_count",
+      //     stops: [
+      //       { value: 0, color: "#ffffff" },
+      //       { value: 5, color: "#deebf7" },
+      //       { value: 15, color: "#9ecae1" },
+      //       { value: 30, color: "#3182bd" },
+      //       { value: 60, color: "#08519c" }
+      //     ]
+      //   }]
+      // };
+
+      map.add(countiesLayer);
+      countiesLayerRef.current = countiesLayer;
+
       // Creează view-ul hărții
       view = new MapView({
         container: mapDiv.current,
@@ -332,6 +424,14 @@ const MapViewComponent = () => {
       viewRef.current = view;
       console.log('MapView creat cu succes');
 
+      countiesLayer.load()
+        .then(() => console.log("GeoJSON loaded OK"))
+        .catch((e) => console.error("GeoJSON load failed:", e));
+
+      view.whenLayerView(countiesLayer)
+        .then(() => console.log("LayerView OK"))
+        .catch((e) => console.error("LayerView failed:", e));
+
       // Layer pentru activități
       const activitiesLayer = new GraphicsLayer();
       map.add(activitiesLayer);
@@ -341,6 +441,13 @@ const MapViewComponent = () => {
       const userLocationLayer = new GraphicsLayer();
       map.add(userLocationLayer);
       userLocationLayerRef.current = userLocationLayer;
+
+      // Layer pentru heatmap-ul refacut
+      const regionLayer = new GraphicsLayer({
+        opacity: 0.55,
+        id: "regions-choropleth"
+      });
+      regionLayerRef.current = regionLayer;
 
       // Layer separat pentru marker-ul de selecție locație (când se creează activitate)
       const selectedLocationLayer = new GraphicsLayer();
@@ -367,7 +474,7 @@ const MapViewComponent = () => {
       });
       usersHeatmapLayerRef.current = usersHeatmapLayer;
       // Nu adăugăm layer-ul pe hartă imediat - va fi adăugat când showUsersHeatmap este true
-      
+
       // Handler pentru click pe marker-ele activităților (doar când formularul NU este deschis)
       // Acest handler va fi gestionat separat în useEffect pentru showActivityForm
 
@@ -375,7 +482,7 @@ const MapViewComponent = () => {
       view.when(() => {
         console.log('MapView inițializat cu succes');
         console.log('View ready, basemap:', map.basemap);
-        
+
         // Verifică dacă basemap-ul s-a încărcat (doar dacă există basemapLayers)
         if (map.basemapLayers && map.basemapLayers.length > 0) {
           view.whenLayerView(map.basemapLayers.getItemAt(0)).then(() => {
@@ -386,23 +493,23 @@ const MapViewComponent = () => {
         } else {
           console.warn('Basemap layers nu sunt disponibile, dar harta ar trebui să funcționeze');
         }
-        
+
         if (!isMountedRef.current) return; // Verifică dacă componenta este încă montată
-        
+
         // Folosește home_location din profil dacă este disponibil, altfel folosește GPS
         const loadUserLocation = async () => {
           try {
             // Încearcă să obțină home_location din profil
             const profileResponse = await api.get('/api/users/me');
             const profile = profileResponse.data;
-            
+
             if (profile.latitude && profile.longitude) {
               // Folosește home_location din profil
               const longitude = profile.longitude;
               const latitude = profile.latitude;
-              
+
               if (!isMountedRef.current) return;
-              
+
               setUserLocation({ longitude, latitude });
               view.goTo({
                 center: [longitude, latitude],
@@ -433,7 +540,7 @@ const MapViewComponent = () => {
               navigator.geolocation.getCurrentPosition(
                 (position) => {
                   if (!isMountedRef.current) return;
-                  
+
                   const { longitude, latitude } = position.coords;
                   setUserLocation({ longitude, latitude });
                   view.goTo({
@@ -472,7 +579,7 @@ const MapViewComponent = () => {
             navigator.geolocation.getCurrentPosition(
               (position) => {
                 if (!isMountedRef.current) return;
-                
+
                 const { longitude, latitude } = position.coords;
                 setUserLocation({ longitude, latitude });
                 view.goTo({
@@ -506,7 +613,7 @@ const MapViewComponent = () => {
             );
           }
         };
-        
+
         loadUserLocation();
 
         // Handler pentru click pe marker-ele activităților
@@ -546,14 +653,14 @@ const MapViewComponent = () => {
     // Cleanup
     return () => {
       isMountedRef.current = false;
-      
+
       // Nu distruge view-ul imediat - lasă-l să fie distrus de browser
       // când container-ul este eliminat din DOM
       const view = viewRef.current;
       if (view) {
         // Marchează view-ul ca fiind în proces de distrugere
         viewRef.current = null;
-        
+
         // Distruge view-ul doar dacă container-ul există încă
         if (view.container && view.container.parentNode && !view.destroyed) {
           try {
@@ -565,15 +672,21 @@ const MapViewComponent = () => {
           }
         }
       }
-      
+
       activitiesLayerRef.current = null;
       userLocationLayerRef.current = null;
       selectedLocationLayerRef.current = null;
       routeLayerRef.current = null;
       heatmapLayerRef.current = null;
       usersHeatmapLayerRef.current = null;
+      regionLayerRef.current = null;
     };
   }, []); // Rulează doar o dată la mount
+
+  useEffect(() => {
+    if (!countiesLayerRef.current) return;
+    countiesLayerRef.current.visible = showRegionChoropleth;
+  }, [showRegionChoropleth]);
 
   // Gestionare click handler pentru formular (separat)
   useEffect(() => {
@@ -587,7 +700,7 @@ const MapViewComponent = () => {
         console.log('Click handler activat pentru selectare locație');
         console.log('window.setActivityLocation există?', typeof window.setActivityLocation);
         console.log('window.setProfileLocation există?', typeof window.setProfileLocation);
-        
+
         // Click pe hartă pentru a selecta locație (când formularul este deschis)
         // NU folosim stopPropagation pentru a permite pan și zoom pe hartă
         clickHandler = viewRef.current.on('click', (event) => {
@@ -814,19 +927,19 @@ const MapViewComponent = () => {
   // Reîncarcă locația utilizatorului când se actualizează profilul (după salvare)
   useEffect(() => {
     if (!mapLoaded || !viewRef.current || !userLocationLayerRef.current || !user || !token) return;
-    
+
     const reloadUserLocation = async () => {
       try {
         const profileResponse = await api.get('/api/users/me');
         const profile = profileResponse.data;
-        
+
         if (profile.latitude && profile.longitude) {
           const longitude = profile.longitude;
           const latitude = profile.latitude;
-          
+
           // Actualizează locația
           setUserLocation({ longitude, latitude });
-          
+
           // Actualizează marker-ul pe hartă
           if (userLocationLayerRef.current) {
             userLocationLayerRef.current.removeAll();
@@ -846,7 +959,7 @@ const MapViewComponent = () => {
             });
             userLocationLayerRef.current.add(userLocationGraphic);
           }
-          
+
           // Centrare pe noua locație
           if (viewRef.current) {
             viewRef.current.goTo({
@@ -859,7 +972,7 @@ const MapViewComponent = () => {
         console.warn('Eroare la reîncărcarea locației:', error);
       }
     };
-    
+
     // Reîncarcă locația doar dacă utilizatorul este autentificat
     if (user && token) {
       reloadUserLocation();
@@ -1176,28 +1289,20 @@ const MapViewComponent = () => {
                 }}
               />
             </div>
+
+
             <div className="filter-group">
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
-                  checked={showHeatmap}
-                  onChange={(e) => setShowHeatmap(e.target.checked)}
+                  checked={showRegionChoropleth}
+                  onChange={(e) => setShowRegionChoropleth(e.target.checked)}
                   style={{ cursor: 'pointer' }}
                 />
-                <span>🔥 Afișează heatmap activități</span>
+                <span>🟦 Afișează densitate pe regiuni (PuBu)</span>
               </label>
             </div>
-            <div className="filter-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={showUsersHeatmap}
-                  onChange={(e) => setShowUsersHeatmap(e.target.checked)}
-                  style={{ cursor: 'pointer' }}
-                />
-                <span>👥 Afișează heatmap utilizatori</span>
-              </label>
-            </div>
+
             {currentRoute && (
               <div className="route-info" style={{ 
                 marginTop: '10px', 
