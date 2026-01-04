@@ -38,54 +38,55 @@ It features an interactive map with activity markers, heatmaps, and regional sta
 
 ### Installation
 
-  ```sh
-    git clone https://github.com/your-username/socialexplore.git
-    cd socialexplore
-  ```
+```sh
+git clone https://github.com/your-username/socialexplore.git
+cd socialexplore
+```
 
 ### Run Docker
-    ```sh
-    docker compose up --build
-    ```
+```sh
+docker compose up --build
+```
 
 ### Backend setup (FastAPI)
-    ```sh
-    cd backend
-    python -m venv venv
-    venv\Scripts\activate # Windows
-    pip installl -r requirements.txt
-    ```
+```sh
+cd backend
+python -m venv venv
+venv\Scripts\activate # Windows
+source venv/bin/activate # Linux
+pip installl -r requirements.txt
+```
 
 #### Start the backend
-    ```sh
-        uvicorn main:app --reload
-    ```
+```sh
+uvicorn main:app --reload
+```
 
 #### Backend will run at
-    ```sh
-    http://localhost:8000
-    ```
+```sh
+http://localhost:8000
+```
 
 #### Health Check
-    ```sh
-    http://localhost:8000/api/health
-    ```
+```sh
+http://localhost:8000/api/health
+```
 
 ### Frontend setup (React)
-    ```sh
-    cd frontend
-    npm install
-    ```
+```sh
+cd frontend
+npm install
+```
 
 #### Create ``.env`` file and add the following
-    ```
-        REACT_APP_ARCGIS_API_KEY=YOUR_KEY
-    ```
+```
+REACT_APP_ARCGIS_API_KEY=YOUR_KEY
+```
 
 #### Start the frontend
-    ```sh
-        npm start
-    ```
+```sh
+npm start
+```
 
 > [!IMPORTANT]
 > Frontend will run at http://localhost:3000 (or 3001)
