@@ -7,6 +7,7 @@ from geoalchemy2 import functions as geo_func
 from shapely.geometry import Point
 from datetime import datetime
 from typing import Optional
+import math
 from app.database import get_db
 from app.models import Activity, User, Participation, ParticipationStatus
 from app.schemas import (
@@ -196,6 +197,75 @@ async def get_nearby_activities(
     return [activity_to_dict(activity, current_user.id, db) for activity in activities]
 
 
+@router.get("/my/created", response_model=list[ActivityResponse])
+async def get_my_created_activities(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Obține activitățile create de utilizatorul curent"""
+    activities = db.query(Activity).filter(
+        Activity.creator_id == current_user.id
+    ).order_by(Activity.created_at.desc()).all()
+
+    return [activity_to_dict(activity, current_user.id, db) for activity in activities]
+
+
+@router.get("/grid")
+def activities_grid(
+    xmin: float,
+    ymin: float,
+    xmax: float,
+    ymax: float,
+    cell_km: float = 10,
+    db: Session = Depends(get_db),
+):
+    # build lon/lat expressions from geometry
+    lon = func.ST_X(Activity.location)
+    lat = func.ST_Y(Activity.location)
+
+    rows = (
+        db.query(lon.label("lon"), lat.label("lat"))
+        .filter(
+            Activity.location.isnot(None),
+            lon.between(xmin, xmax),
+            lat.between(ymin, ymax),
+        )
+        .all()
+    )
+
+    def snap(val, step):
+        return math.floor(val / step) * step
+
+    DEG_PER_KM = 1 / 111.0
+    step = cell_km * DEG_PER_KM
+
+    buckets = {}
+    for r in rows:
+        gx = snap(r.lon, step)
+        gy = snap(r.lat, step)
+        buckets[(gx, gy)] = buckets.get((gx, gy), 0) + 1
+
+    features = []
+    for (gx, gy), count in buckets.items():
+        features.append({
+            "type": "Feature",
+            "properties": {"count": count},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [gx, gy],
+                    [gx + step, gy],
+                    [gx + step, gy + step],
+                    [gx, gy + step],
+                    [gx, gy],
+                ]]
+            }
+        })
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+
 @router.get("/{activity_id}", response_model=ActivityResponse)
 async def get_activity(
     activity_id: int,
@@ -238,7 +308,7 @@ async def update_activity(
     # Validează că data finală nu este înainte de data inițială
     start_time = activity_update.start_time if activity_update.start_time else activity.start_time
     end_time = activity_update.end_time if activity_update.end_time is not None else activity.end_time
-    
+
     if end_time and start_time:
         if end_time < start_time:
             raise HTTPException(
@@ -272,7 +342,6 @@ async def update_activity(
 
     return activity_to_dict(activity, current_user.id, db)
 
-
 @router.delete("/{activity_id}")
 async def delete_activity(
     activity_id: int,
@@ -299,69 +368,27 @@ async def delete_activity(
 
     return {"message": "Activitate ștearsă cu succes"}
 
-
-@router.get("/my/created", response_model=list[ActivityResponse])
-async def get_my_created_activities(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Obține activitățile create de utilizatorul curent"""
-    activities = db.query(Activity).filter(
-        Activity.creator_id == current_user.id
-    ).order_by(Activity.created_at.desc()).all()
-
-    return [activity_to_dict(activity, current_user.id, db) for activity in activities]
-
-@router.get("/grid")
-def activities_grid(
-    xmin: float,
-    ymin: float,
-    xmax: float,
-    ymax: float,
-    cell_km: float = 10,
-    db: Session = Depends(get_db),
-):
+@router.get("/by-county")
+def activities_by_county(db: Session = Depends(get_db)):
+    sql = """
+    SELECT
+        c.nuts_id,
+        c.name_latn,
+        COUNT(a.id) AS activity_count
+    FROM romania_counties c
+    LEFT JOIN activities a
+        ON a.location IS NOT NULL
+        AND ST_Contains(c.geom, a.location)
+    WHERE c.cntr_code = 'RO'
+    GROUP BY c.nuts_id, c.name_latn
     """
-    Returns GeoJSON grid cells with activity counts
-    """
+    rows = db.execute(sql).fetchall()
 
-    activities = db.query(Activity).filter(
-        Activity.longitude.between(xmin, xmax),
-        Activity.latitude.between(ymin, ymax),
-    ).all()
-
-    def snap(val, step):
-        return round(val / step) * step
-
-    DEG_PER_KM = 1 / 111.0
-    step = cell_km * DEG_PER_KM
-
-    buckets = {}
-
-    for a in activities:
-        gx = snap(a.longitude, step)
-        gy = snap(a.latitude, step)
-        key = (gx, gy)
-        buckets[key] = buckets.get(key, 0) + 1
-
-    features = []
-    for (gx, gy), count in buckets.items():
-        features.append({
-            "type": "Feature",
-            "properties": {"count": count},
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[
-                    [gx, gy],
-                    [gx + step, gy],
-                    [gx + step, gy + step],
-                    [gx, gy + step],
-                    [gx, gy],
-                ]]
-            }
-        })
-
-    return {
-        "type": "FeatureCollection",
-        "features": features
-    }
+    return [
+        {
+            "nuts_id": r.nuts_id,
+            "name": r.name_latn,
+            "activity_count": r.activity_count
+        }
+        for r in rows
+    ]
